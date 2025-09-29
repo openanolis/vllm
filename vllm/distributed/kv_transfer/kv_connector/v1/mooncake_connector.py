@@ -10,6 +10,7 @@ from queue import Queue
 from typing import TYPE_CHECKING, Any, Optional
 
 import msgspec
+import numpy as np
 import torch
 import zmq
 
@@ -518,15 +519,19 @@ class MooncakeConnectorWorker:
             if num_local_blocks > num_remote_blocks:
                 local_block_ids = local_block_ids[-num_remote_blocks:]
 
+            # Group by indices
+            group_local_block_ids, group_remote_block_ids = group_concurrent_contiguous(
+                local_block_ids, remote_block_ids)
+
             for local_layer_addr, remote_layer_addr in zip(
                     local_base_addr, remote_base_addr):
-                for local_block_id, remote_block_id in zip(
-                        local_block_ids, remote_block_ids):
+                for group_local_block_id, group_remote_block_id in zip(
+                        group_local_block_ids, group_remote_block_ids):
                     src_ptrs.append(local_layer_addr +
-                                    local_block_id * block_len)
+                                    group_local_block_id[0] * block_len)
                     dst_ptrs.append(remote_layer_addr +
-                                    remote_block_id * block_len)
-                    lengths.append(block_len)
+                                    group_remote_block_id[0] * block_len)
+                    lengths.append(block_len * len(group_local_block_id))
 
             logger.debug("Sending kv_caches for request %s (%d blocks) to %s",
                          req_id, num_remote_blocks, remote_session)
@@ -706,3 +711,21 @@ def zmq_ctx(socket_type: Any, addr: str) -> Iterator[zmq.Socket]:
     finally:
         if ctx is not None:
             ctx.destroy(linger=0)
+
+
+def group_concurrent_contiguous(
+        src_indices: list[int],
+        dst_indices: list[int]) -> tuple[list[list[int]], list[list[int]]]:
+    """Vectorised NumPy implementation."""
+    if len(src_indices) == 0:
+        return [], []
+
+    brk = np.where((np.diff(src_indices) != 1)
+                   | (np.diff(dst_indices) != 1))[0] + 1
+    src_groups = np.split(src_indices, brk)
+    dst_groups = np.split(dst_indices, brk)
+
+    src_groups = [g.tolist() for g in src_groups]
+    dst_groups = [g.tolist() for g in dst_groups]
+
+    return src_groups, dst_groups
