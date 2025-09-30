@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import contextlib
 import threading
+import time
 from collections import defaultdict
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -65,6 +66,7 @@ class RecvReqMeta:
 class SendBlockMeta:
     local_block_ids: list[int]
     ready: threading.Event
+    expire_time: float = float("inf")
 
 
 @dataclass
@@ -481,6 +483,8 @@ class MooncakeConnectorWorker:
                     logger.warning("Request %s not found in reqs_need_send",
                                    req_id)
                     return
+                # Mark it as not expired. We will send it now.
+                send_meta.expire_time = float("inf")
                 send_reqs.append((req_id, send_meta))
 
         self._send_blocks(send_reqs, meta)
@@ -628,6 +632,23 @@ class MooncakeConnectorWorker:
                 "and %s requests done recving", self.tp_rank,
                 len(finished_sending_reqs), len(finished_recving_reqs))
 
+        # Handle timeout to avoid stranding blocks on remote.
+        now = time.perf_counter()
+        with self.reqs_need_send.lock:
+            expired_reqs = [
+                req_id
+                for req_id, send_meta in self.reqs_need_send.reqs.items()
+                if send_meta.expire_time < now
+            ]
+            for req_id in expired_reqs:
+                logger.warning(
+                    "Request %s timed out after %d seconds without "
+                    "being sent. Freeing its blocks on the producer side.",
+                    req_id, envs.VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT)
+                del self.reqs_need_send.reqs[req_id]
+            if expired_reqs:
+                finished_sending_reqs.update(expired_reqs)
+
         return finished_sending_reqs or None, finished_recving_reqs or None
 
     def receive_kv(self, path: str, req_blocks: list[tuple[str, list[int]]]):
@@ -681,12 +702,14 @@ class MooncakeConnectorWorker:
 
         if self.kv_role != "kv_consumer":
             with self.reqs_need_send.lock:
-                for req_id, send_meta in metadata.reqs_to_send.items():
-                    if send_meta:
+                for req_id, block_ids in metadata.reqs_to_send.items():
+                    if block_ids:
                         # Already gone through request_finished()
-                        self.reqs_need_send.reqs[
-                            req_id].local_block_ids = send_meta
-                        self.reqs_need_send.reqs[req_id].ready.set()
+                        send_meta = self.reqs_need_send.reqs[req_id]
+                        send_meta.local_block_ids = block_ids
+                        send_meta.ready.set()
+                        send_meta.expire_time = time.perf_counter(
+                        ) + envs.VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT
                     else:
                         # From update_state_after_alloc(),
                         # but not reach request_finished() yet

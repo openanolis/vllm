@@ -158,6 +158,7 @@ if TYPE_CHECKING:
     VLLM_ROCM_QUICK_REDUCE_CAST_BF16_TO_FP16: bool = True
     VLLM_ROCM_QUICK_REDUCE_MAX_SIZE_BYTES_MB: Optional[int] = None
     VLLM_NIXL_ABORT_REQUEST_TIMEOUT: int = 120
+    VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT: int = 120
     VLLM_USE_CUDNN_PREFILL: bool = False
     VLLM_ENABLE_CUDAGRAPH_GC: bool = False
     VLLM_LOOPBACK_IP: str = ""
@@ -1152,6 +1153,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # disaggregated decode-prefill setup.
     "VLLM_NIXL_ABORT_REQUEST_TIMEOUT":
     lambda: int(os.getenv("VLLM_NIXL_ABORT_REQUEST_TIMEOUT", "120")),
+
+    # Time (in seconds) after which the KV cache on the producer side is
+    # automatically cleared if no pull request is received from the
+    # consumer.
+    "VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT":
+    lambda: int(os.getenv("VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT", "120")),
 
     # Controls whether or not to use cudnn prefill
     "VLLM_USE_CUDNN_PREFILL":
