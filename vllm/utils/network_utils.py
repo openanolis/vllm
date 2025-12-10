@@ -223,7 +223,7 @@ def split_zmq_path(path: str) -> tuple[str, str, str]:
 
     scheme = parsed.scheme
     host = parsed.hostname or ""
-    port = str(parsed.port or "")
+    port = str(parsed.port) if parsed.port is not None else ""
 
     if scheme == "tcp" and not all((host, port)):
         # The host and port fields are required for tcp
