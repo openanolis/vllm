@@ -1196,10 +1196,20 @@ class MooncakeBootstrapServer:
 
         self.host = host
         self.port = port
-        self.app = FastAPI()
+        self.app = FastAPI(
+            on_startup=[self.prune_startup], on_shutdown=[self.prune_shutdown]
+        )
         self._register_routes()
         self.server_thread: threading.Thread | None = None
         self.server: uvicorn.Server | None = None
+
+        self._pruning_task: asyncio.Task | None = None
+        # A set of request IDs to be pruned in the next cycle.
+        self.reqs_to_prune: set[ReqId] = set()
+        self.prune_interval: int = envs.VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT * 2
+
+    def __del__(self):
+        self.shutdown()
 
     def _register_routes(self):
         self.app.post("/register_worker")(self._register_worker)
@@ -1297,6 +1307,34 @@ class MooncakeBootstrapServer:
                 results[req_id] = ("ok", worker_info)
 
         return QueryRequestsResponse(results=results)
+
+    async def _pruning_loop(self):
+        """The dedicated background task that periodically prunes stale requests."""
+        try:
+            while True:
+                # Perform the pruning logic
+                with self._lock:
+                    for req_id in self.reqs_to_prune:
+                        del self.req_to_dp_rank[req_id]
+                    logger.debug("pruned %d requests", len(self.reqs_to_prune))
+                    self.reqs_to_prune = set(self.req_to_dp_rank)
+
+                # Wait for the specified interval
+                await asyncio.sleep(self.prune_interval)
+        except asyncio.CancelledError:
+            # This is the expected way to exit the loop
+            pass
+        except Exception as e:
+            # Log any other unexpected errors in the background task
+            logger.error("Error in background pruning loop: %s", e)
+
+    async def prune_startup(self):
+        self._pruning_task = asyncio.create_task(self._pruning_loop())
+
+    async def prune_shutdown(self):
+        if self._pruning_task:
+            self._pruning_task.cancel()
+            await self._pruning_task
 
 
 def get_mooncake_bootstrap_addr(vllm_config: VllmConfig) -> tuple[str, int]:
