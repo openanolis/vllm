@@ -521,6 +521,10 @@ class MooncakeConnectorWorker:
         assert vllm_config.parallel_config
         self.dp_rank = vllm_config.parallel_config.data_parallel_rank
         self.dp_size = vllm_config.parallel_config.data_parallel_size
+        if vllm_config.parallel_config.pipeline_parallel_size > 1:
+            raise ValueError(
+                "Mooncake Transfer Engine does not support pipeline parallelism yet."
+            )
 
         assert vllm_config.kv_transfer_config
         self.kv_role = vllm_config.kv_transfer_config.kv_role
